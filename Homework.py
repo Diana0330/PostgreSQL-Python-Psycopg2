@@ -1,6 +1,6 @@
 import psycopg2
+from psycopg2 import sql
 
-# Функция, создающая структуру БД (таблицы).
 def create_tables(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -15,7 +15,7 @@ def create_tables(conn):
         CREATE TABLE IF NOT EXISTS phone (
     	    phone_id serial primary key,
     	    phone_number varchar(20) unique,
-    	    client_id integer not null references client(client_id));
+    	    client_id integer not null references client(client_id) ON DELETE CASCADE ON UPDATE CASCADE)
             """)
         conn.commit()
 
@@ -41,15 +41,28 @@ def add_phone_number(conn, client_id, phone_number):
             conn.commit()
 
 #Функция, позволяющая изменить данные о клиенте.
-def update_client(conn, client_id, first_name, last_name, email):
+def update_client(conn, client_id, first_name=None, last_name=None, email=None):
+    if not first_name and not last_name and not email:
+        return
+    first_name_param = sql.SQL('')
+    last_name_param = sql.SQL('')
+    email_param = sql.SQL('')
+    if first_name:
+        first_name_param = sql.SQL('first_name = {}').format(sql.Literal(first_name))
+    if last_name:
+        last_name_param = sql.SQL('last_name = {}').format(sql.Literal(last_name))
+    if email:
+        email_param = sql.SQL('email = {}').format(sql.Literal(email))
+    filtered_items = filter(lambda param: param != sql.SQL(''), [first_name_param, last_name_param, email_param])
+    all_params = sql.SQL(',').join(filtered_items)
+    print(all_params.as_string(conn))
     with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE client 
-            SET first_name = %s,
-            last_name = %s,
-            email = %s
-            WHERE client_id = %s;
-             """, (first_name, last_name, email, client_id))
+        cur.execute(sql.Composed([
+            sql.SQL("UPDATE client SET "),
+            all_params,
+            sql.SQL("WHERE client_id = %s;")]),
+            (client_id, ))
+
         conn.commit()
 #Функция, которая возвращает всe телефоны привязанные к клиенту.
 def print_phone_number(conn, client_id):
@@ -73,45 +86,68 @@ def delete_phone(conn, phone_id):
 def delete_client(conn, client_id):
     with conn.cursor() as cur:
         cur.execute("""
-        DELETE FROM client 
-        WHERE client_id=%s
+        DELETE FROM client CASCADE 
+        WHERE client_id=%s  
         """, (client_id,))
         conn.commit()
 
 #Функция, позволяющая найти клиента по его данным: имени, фамилии, email или телефону.
-def find_client(conn, data):
+def find_client(conn,phone_number=None, first_name=None, last_name=None, email=None):
+    output = []
+    if not phone_number and not first_name and not last_name and not email:
+        return []
+    phone_number_param = sql.SQL('')
+    first_name_param = sql.SQL('')
+    last_name_param = sql.SQL('')
+    email_param = sql.SQL('')
+    if phone_number:
+        phone_number_param = sql.SQL('p.phone_number ilike {}').format(sql.Literal(phone_number))
+    if first_name:
+        first_name_param = sql.SQL('c.first_name ilike {}').format(sql.Literal(first_name))
+    if last_name:
+        last_name_param = sql.SQL('c.last_name ilike {}').format(sql.Literal(last_name))
+    if email:
+        email_param = sql.SQL('c.email ilike {}').format(sql.Literal(email))
+    filtered_items = filter(lambda param: param != sql.SQL(''), [phone_number_param, first_name_param, last_name_param, email_param])
+    all_params = sql.SQL(' and ').join(filtered_items)
+
     with conn.cursor() as cur:
-        cur.execute("""
-        SELECT c.client_id, c.first_name, c.last_name, c.email
-        from client c 
-        left join phone p on c.client_id = p.client_id 
-        where p.phone_number ilike %(data)s 
-        or c.first_name ilike %(data)s 
-        or c.last_name ilike %(data)s 
-        or c.email ilike %(data)s
-        order by client_id
-        """, {'data': '%'+data+'%'})
-        return cur.fetchall()
+        cur.execute(
+            sql.Composed([
+                sql.SQL("""SELECT c.client_id, c.first_name, c.last_name, c.email
+                    from client c 
+                    left join phone p on c.client_id = p.client_id 
+                    WHERE """),
+                all_params,
+                sql.SQL("order by client_id;")]))
+        output = cur.fetchall()
         #if output is not None:
             #result = output
-    #return output
+    return output
 
-conn = psycopg2.connect(database='clients_management',
-                        user='postgres',
-                        password='1234')
-test = create_tables(conn)
-first_client = add_new_client(conn,'Alex', 'Jones', 'alexjones@gmail.com')
-print(first_client)
-add_phone_number(conn, first_client, str(first_client)+'-410-459-5056')
-first_find_client = find_client(conn, str(first_client)+'-410-459-5056')
-print(first_find_client)
-update_client(conn, client_id=first_client, first_name='Alex', last_name='Jackson', email='alexjones@gmail.com')
-print(find_client(conn, data=str(first_client)+'-410-459-5056'))
-phone_data = print_phone_number(conn, first_client)
-print(phone_data)
-delete_phone(conn, phone_data[0][0])
-print(print_phone_number(conn, first_client))
-print(delete_client(conn, first_client))
+
+if __name__ == "__main__":
+    conn = psycopg2.connect(database='clients_management',
+                            user='postgres',
+                            password='1234')
+    test = create_tables(conn)
+    first_client = add_new_client(conn, 'Alex', 'Jones', 'alexjones@gmail.com')
+    print(first_client)
+    add_phone_number(conn, first_client, str(first_client) + '-410-459-5056')
+    first_find_client = find_client(conn, str(first_client) + '-410-459-5056')
+    print(first_find_client)
+    update_client(conn, client_id=first_client, first_name='Alex', last_name='Jackson', email='alexjones@gmail.com')
+    print(find_client(conn, str(first_client) + '-410-459-5056'))
+    phone_data = print_phone_number(conn, first_client)
+    print(phone_data)
+    delete_phone(conn, phone_data[0][0])
+    print(print_phone_number(conn, first_client))
+    print(delete_client(conn, first_client))
+else:
+    print("Module Homework will be imported in a different module")
+
+
+
 
 
 
